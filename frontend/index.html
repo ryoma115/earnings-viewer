@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>決算ビューア</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+      background: #f5f6fa;
+      color: #1a1a2e;
+      min-height: 100vh;
+      padding: 32px 16px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+    header h1 { font-size: 1.8rem; font-weight: 700; }
+    header p  { color: #666; margin-top: 4px; font-size: 0.9rem; }
+
+    .search-box {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 32px;
+    }
+    .search-box input {
+      width: 220px;
+      padding: 10px 14px;
+      border: 1.5px solid #ccc;
+      border-radius: 8px;
+      font-size: 1rem;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .search-box input:focus { border-color: #4361ee; }
+    .search-box button {
+      padding: 10px 20px;
+      background: #4361ee;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: background .2s;
+    }
+    .search-box button:hover { background: #3651d4; }
+    .search-box button:disabled { background: #aaa; cursor: not-allowed; }
+
+    #status {
+      text-align: center;
+      color: #666;
+      min-height: 24px;
+      margin-bottom: 16px;
+      font-size: 0.9rem;
+    }
+    #status.error { color: #e63946; }
+
+    /* 企業ヘッダー */
+    #company-header {
+      max-width: 960px;
+      margin: 0 auto 24px;
+      background: #fff;
+      border-radius: 12px;
+      padding: 20px 24px;
+      display: none;
+      box-shadow: 0 2px 8px rgba(0,0,0,.06);
+    }
+    #company-header h2 { font-size: 1.3rem; }
+    #company-header .meta {
+      display: flex;
+      gap: 16px;
+      margin-top: 8px;
+      font-size: 0.85rem;
+      color: #555;
+      flex-wrap: wrap;
+    }
+
+    /* 財務テーブル */
+    .section {
+      max-width: 960px;
+      margin: 0 auto 24px;
+      background: #fff;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0,0,0,.06);
+      display: none;
+    }
+    .section h3 {
+      padding: 14px 20px;
+      background: #4361ee;
+      color: #fff;
+      font-size: 0.95rem;
+      font-weight: 600;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+    }
+    thead th {
+      background: #eef0fb;
+      padding: 10px 14px;
+      text-align: right;
+      font-weight: 600;
+      white-space: nowrap;
+      color: #333;
+    }
+    thead th:first-child { text-align: left; }
+    tbody tr:nth-child(even) { background: #fafafa; }
+    tbody td {
+      padding: 9px 14px;
+      text-align: right;
+      border-bottom: 1px solid #eee;
+      white-space: nowrap;
+    }
+    tbody td:first-child { text-align: left; color: #444; }
+    tbody td.up   { color: #2a9d8f; }
+    tbody td.down { color: #e63946; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>決算ビューア</h1>
+  <p>証券コードまたは企業名を入力して財務データを表示します</p>
+</header>
+
+<div class="search-box">
+  <input id="query" type="text" placeholder="例: 7203 / トヨタ" />
+  <button id="btn">検索</button>
+</div>
+
+<div id="status"></div>
+<div id="company-header"></div>
+<div id="pl-section"   class="section"><h3>損益計算書（P/L）</h3><div id="pl-body"></div></div>
+<div id="bs-section"   class="section"><h3>貸借対照表（B/S）</h3><div id="bs-body"></div></div>
+<div id="cf-section"   class="section"><h3>キャッシュフロー計算書（C/F）</h3><div id="cf-body"></div></div>
+<div id="per-section"  class="section"><h3>1株当たり指標</h3><div id="per-body"></div></div>
+
+<script>
+const API = '';   // same-origin (FastAPI が / に mount)
+
+const $ = id => document.getElementById(id);
+const btn   = $('btn');
+const input = $('query');
+const status = $('status');
+
+function setStatus(msg, isError = false) {
+  status.textContent = msg;
+  status.className = isError ? 'error' : '';
+}
+
+function hideAll() {
+  ['company-header','pl-section','bs-section','cf-section','per-section'].forEach(id => {
+    $(id).style.display = 'none';
+  });
+}
+
+// 億円表示
+function fmt(val) {
+  if (val == null) return '—';
+  const n = Number(val);
+  if (isNaN(n)) return val;
+  if (Math.abs(n) >= 1e8) return (n / 1e8).toLocaleString('ja-JP', {maximumFractionDigits: 1}) + ' 億円';
+  if (Math.abs(n) >= 1e4) return (n / 1e4).toLocaleString('ja-JP', {maximumFractionDigits: 1}) + ' 万円';
+  return n.toLocaleString('ja-JP', {maximumFractionDigits: 2});
+}
+
+function fmtPct(val) {
+  if (val == null) return '—';
+  return Number(val).toFixed(1) + '%';
+}
+
+function buildTable(containerId, rows, years, fmtFn = fmt) {
+  const years_sorted = [...years].reverse();   // 新しい年度を右に
+  let html = '<table><thead><tr><th>項目</th>';
+  years_sorted.forEach(y => { html += `<th>${y}年度</th>`; });
+  html += '</tr></thead><tbody>';
+
+  rows.forEach(([label, key, formatter]) => {
+    html += `<tr><td>${label}</td>`;
+    let prev = null;
+    years_sorted.forEach(y => {
+      const rec = dataByYear[y];
+      const val = rec ? rec[key] : undefined;
+      const disp = (formatter || fmtFn)(val);
+      let cls = '';
+      if (val != null && prev != null) {
+        cls = val > prev ? 'up' : val < prev ? 'down' : '';
+      }
+      html += `<td class="${cls}">${disp}</td>`;
+      prev = val;
+    });
+    html += '</tr>';
+  });
+
+  html += '</tbody></table>';
+  $(containerId).innerHTML = html;
+}
+
+let dataByYear = {};
+
+async function search() {
+  const q = input.value.trim();
+  if (!q) return;
+  hideAll();
+  setStatus('検索中...');
+  btn.disabled = true;
+
+  try {
+    const res = await fetch(`${API}/api/search?q=${encodeURIComponent(q)}`);
+    if (!res.ok) throw new Error(`検索エラー: ${res.status}`);
+    const data = await res.json();
+
+    // レスポンスは { data: [...], meta: {...} }
+    const companies = data.data || [];
+    if (!companies.length) {
+      setStatus('企業が見つかりませんでした。', true);
+      btn.disabled = false;
+      return;
+    }
+
+    const company = companies[0];
+    const code = company.edinet_code;
+    setStatus(`"${company.name}" (${code}) の財務データを取得中...`);
+
+    await loadFinancials(company, code);
+  } catch (e) {
+    setStatus(e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function loadFinancials(company, code) {
+  const res = await fetch(`${API}/api/financials/${code}`);
+  if (!res.ok) throw new Error(`財務データ取得エラー: ${res.status}`);
+  const raw = await res.json();
+
+  // レスポンスは { data: [...], meta: {...} }
+  const records = raw.data || [];
+  if (!records.length) {
+    setStatus('財務データが見つかりませんでした。', true);
+    return;
+  }
+
+  // 年度キーを決定 (fiscal_year / year)
+  dataByYear = {};
+  const years = [];
+  records.forEach(r => {
+    const y = r.fiscal_year || r.year;
+    if (y != null) { dataByYear[y] = r; years.push(y); }
+  });
+  years.sort();
+
+  // 企業ヘッダー
+  const ch = $('company-header');
+  const latest = records[records.length - 1] || {};
+  ch.innerHTML = `
+    <h2>${company.name || code}</h2>
+    <div class="meta">
+      <span>証券コード: ${company.sec_code || '—'}</span>
+      <span>EDINETコード: ${code}</span>
+      <span>業種: ${company.industry || '—'}</span>
+      <span>会計基準: ${latest.accounting_standard || '—'}</span>
+    </div>`;
+  ch.style.display = 'block';
+
+  // P/L
+  const plRows = [
+    ['売上高',           'revenue'],
+    ['営業利益',         'operating_income'],
+    ['経常利益',         'ordinary_income'],
+    ['税前当期純利益',   'profit_before_tax'],
+    ['当期純利益（親）', 'net_income'],
+    ['包括利益',         'comprehensive_income'],
+  ];
+  buildTable('pl-body', plRows, years);
+  $('pl-section').style.display = 'block';
+
+  // B/S
+  const bsRows = [
+    ['総資産',         'total_assets'],
+    ['純資産',         'net_assets'],
+    ['株主資本',       'shareholders_equity'],
+    ['負債合計',       'total_liabilities'],
+    ['現金及び同等物', 'cash'],
+  ];
+  buildTable('bs-body', bsRows, years);
+  $('bs-section').style.display = 'block';
+
+  // C/F
+  const cfRows = [
+    ['営業活動CF', 'cf_operating'],
+    ['投資活動CF', 'cf_investing'],
+    ['財務活動CF', 'cf_financing'],
+  ];
+  buildTable('cf-body', cfRows, years);
+  $('cf-section').style.display = 'block';
+
+  // 1株指標
+  const f2 = v => v == null ? '—' : Number(v).toFixed(2);
+  // 小数（0.xx）なら×100してパーセント表示、すでにパーセントなら直接表示
+  const fPct = v => {
+    if (v == null) return '—';
+    const n = Number(v);
+    return (Math.abs(n) <= 1 ? (n * 100).toFixed(1) : n.toFixed(1)) + '%';
+  };
+  const perRows = [
+    ['EPS（円）',      'eps',               f2],
+    ['BPS（円）',      'bps',               f2],
+    ['1株配当（円）',  'dividend_per_share',f2],
+    ['配当性向',       'payout_ratio',      fPct],
+    ['ROE',            'roe_official',      fPct],
+    ['自己資本比率',   'equity_ratio_official', fPct],
+    ['PER（倍）',      'per',               v => v == null ? '—' : Number(v).toFixed(1) + '倍'],
+  ];
+  buildTable('per-body', perRows, years);
+  $('per-section').style.display = 'block';
+
+  setStatus('');
+}
+
+btn.addEventListener('click', search);
+input.addEventListener('keydown', e => { if (e.key === 'Enter') search(); });
+</script>
+</body>
+</html>
