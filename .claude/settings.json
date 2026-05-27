@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/py_syntax_check.sh",
+            "statusMessage": "Python 構文チェック中..."
+          }
+        ]
+      }
+    ]
+  }
+}
